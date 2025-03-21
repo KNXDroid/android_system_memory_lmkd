@@ -2707,6 +2707,7 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     static int64_t prev_thrash_growth = 0;
     static bool check_filecache = false;
     static int max_thrashing = 0;
+    static bool initialized = false;
 
     union meminfo mi;
     union vmstat vs;
@@ -2763,15 +2764,18 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
         return;
     }
 
-    /* Reset states after process got killed */
-    if (killing) {
-        killing = false;
-        cycle_after_kill = true;
+    /* Initialize states the first time we get here and reset after a kill */
+    if (!initialized || killing) {
+        if (killing) {
+            killing = false;
+            cycle_after_kill = true;
+        }
         /* Reset file-backed pagecache size and refault amounts after a kill */
         base_file_lru = vs.field.nr_inactive_file + vs.field.nr_active_file;
         init_ws_refault = workingset_refault_file;
         thrashing_reset_tm = curr_tm;
         prev_thrash_growth = 0;
+        initialized = true;
     }
 
     /* Check free swap levels */
