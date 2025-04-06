@@ -145,6 +145,8 @@ static inline void trace_kill_end() {}
 #define PSI_POLL_PERIOD_SHORT_MS 10
 /* Polling period after PSI signal when pressure is low */
 #define PSI_POLL_PERIOD_LONG_MS 100
+/* PSI complete stall for super critical events */
+#define PSI_SCRIT_COMPLETE_STALL_MS (75)
 
 #define FAIL_REPORT_RLIMIT_MS 1000
 
@@ -163,7 +165,7 @@ static inline void trace_kill_end() {}
 #define DEF_PARTIAL_STALL_LOWRAM 200
 #define DEF_PARTIAL_STALL 70
 /* ro.lmk.psi_complete_stall_ms property defaults */
-#define DEF_COMPLETE_STALL 700
+#define DEF_COMPLETE_STALL 70
 /* ro.lmk.direct_reclaim_threshold_ms property defaults */
 #define DEF_DIRECT_RECL_THRESH_MS 0
 /* ro.lmk.swap_compression_ratio property defaults */
@@ -171,9 +173,13 @@ static inline void trace_kill_end() {}
 /* ro.lmk.lowmem_min_oom_score defaults */
 #define DEF_LOWMEM_MIN_SCORE (PREVIOUS_APP_ADJ + 1)
 
+#define PSI_CONT_EVENT_THRESH (4)
 #define LMKD_REINIT_PROP "lmkd.reinit"
 
 #define WATCHDOG_TIMEOUT_SEC 2
+#define PSI_OLD_LOW_THRESH_MS 70
+#define PSI_OLD_MED_THRESH_MS 100
+#define PSI_OLD_CRIT_THRESH_MS 70
 
 /* default to old in-kernel interface if no memory pressure events */
 static bool use_inkernel_interface = true;
@@ -239,14 +245,16 @@ static int64_t filecache_min_kb;
 static int64_t stall_limit_critical;
 static bool use_psi_monitors = false;
 static int kpoll_fd;
+static int count_upgraded_event;
+static int psi_cont_event_thresh = PSI_CONT_EVENT_THRESH;
 static bool delay_monitors_until_boot;
 static int direct_reclaim_threshold_ms;
 static int swap_compression_ratio;
 static int lowmem_min_oom_score;
 static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
-    { PSI_SOME, 70 },    /* 70ms out of 1sec for partial stall */
-    { PSI_SOME, 100 },   /* 100ms out of 1sec for partial stall */
-    { PSI_FULL, 70 },    /* 70ms out of 1sec for complete stall */
+    { PSI_SOME, PSI_OLD_LOW_THRESH_MS },    /* 70ms out of 1sec for partial stall */
+    { PSI_SOME, PSI_OLD_MED_THRESH_MS },   /* 100ms out of 1sec for partial stall */
+    { PSI_FULL, PSI_SCRIT_COMPLETE_STALL_MS },    /* 75ms out of 1sec for complete stall */
 };
 
 static uint64_t mp_event_count;
@@ -258,6 +266,7 @@ static int reaper_comm_fd[2];
 enum polling_update {
     POLLING_DO_NOT_CHANGE,
     POLLING_START,
+    POLLING_CRIT_UPGRADE,
     POLLING_PAUSE,
     POLLING_RESUME,
 };
@@ -3087,7 +3096,12 @@ no_kill:
      * without causing memory pressure
      */
     if (events || killing || reclaim == DIRECT_RECLAIM) {
-        poll_params->update = POLLING_START;
+        if (count_upgraded_event >= psi_cont_event_thresh) {
+            poll_params->update = POLLING_CRIT_UPGRADE;
+            count_upgraded_event = 0;
+        } else if (!poll_params->poll_handler || data >= poll_params->poll_handler->data) {
+            poll_params->update = POLLING_START;
+        }
     }
 
     /* Decide the polling interval */
@@ -3538,6 +3552,10 @@ static bool init_psi_monitors() {
         psi_thresholds[VMPRESS_LEVEL_LOW].threshold_ms = 0;
         psi_thresholds[VMPRESS_LEVEL_MEDIUM].threshold_ms = psi_partial_stall_ms;
         psi_thresholds[VMPRESS_LEVEL_CRITICAL].threshold_ms = psi_complete_stall_ms;
+    } else {
+        psi_thresholds[VMPRESS_LEVEL_LOW].threshold_ms = PSI_OLD_LOW_THRESH_MS;
+        psi_thresholds[VMPRESS_LEVEL_MEDIUM].threshold_ms = PSI_OLD_MED_THRESH_MS;
+        psi_thresholds[VMPRESS_LEVEL_CRITICAL].threshold_ms = PSI_OLD_CRIT_THRESH_MS;
     }
 
     if (!init_mp_psi(VMPRESS_LEVEL_LOW, use_new_strategy)) {
@@ -3902,6 +3920,11 @@ static void call_handler(struct event_handler_info* handler_info,
             /* Polled for the duration of PSI window, time to stop */
             poll_params->poll_handler = NULL;
         }
+        break;
+    case POLLING_CRIT_UPGRADE:
+        poll_params->poll_start_tm = curr_tm;
+        if ((enum vmpressure_level)handler_info->data <= VMPRESS_LEVEL_CRITICAL)
+            poll_params->poll_handler = &vmpressure_hinfo[VMPRESS_LEVEL_CRITICAL];
         break;
     }
     watchdog.stop();
