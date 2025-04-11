@@ -1176,7 +1176,6 @@ static void register_oom_adj_proc(const struct lmk_procprio& proc, struct ucred*
 
         std::string soft_limit_path;
         if (!CgroupGetAttributePathForTask("MemSoftLimit", proc.pid, &soft_limit_path)) {
-            ALOGE("Querying MemSoftLimit path failed");
             return;
         }
 
