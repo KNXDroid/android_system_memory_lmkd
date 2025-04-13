@@ -146,7 +146,7 @@ static inline void trace_kill_end() {}
 /* Polling period after PSI signal when pressure is low */
 #define PSI_POLL_PERIOD_LONG_MS 100
 /* PSI complete stall for super critical events */
-#define PSI_SCRIT_COMPLETE_STALL_MS (75)
+#define PSI_SCRIT_COMPLETE_STALL_MS (150)
 
 #define FAIL_REPORT_RLIMIT_MS 1000
 
@@ -322,6 +322,7 @@ static int maxevents;
 /* OOM score values used by both kernel and framework */
 #define OOM_SCORE_ADJ_MIN       (-1000)
 #define OOM_SCORE_ADJ_MAX       1000
+#define OOM_SCORE_ADJ_KILL_CANDIDATE       900
 
 static std::array<int, MAX_TARGETS> lowmem_adj;
 static std::array<int, MAX_TARGETS> lowmem_minfree;
@@ -1390,7 +1391,7 @@ static int get_killcnt(int min_oomadj, int max_oomadj) {
         return 0;
 
     /* special case to get total kill count */
-    if (min_oomadj > OOM_SCORE_ADJ_MAX)
+    if (min_oomadj > OOM_SCORE_ADJ_KILL_CANDIDATE)
         return killcnt_total;
 
     while (min_oomadj <= max_oomadj &&
@@ -2570,6 +2571,10 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
             if (!procp)
                 break;
 
+            if (i >= OOM_SCORE_ADJ_KILL_CANDIDATE) {
+                min_score_adj = OOM_SCORE_ADJ_KILL_CANDIDATE;
+            }
+
             killed_size = kill_one_process(procp, min_score_adj, ki, mi, wi, tm, pd);
             if (killed_size >= 0) {
                 break;
@@ -3231,7 +3236,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
             other_file = 0;
         }
 
-        min_score_adj = OOM_SCORE_ADJ_MAX + 1;
+        min_score_adj = OOM_SCORE_ADJ_KILL_CANDIDATE;
         for (i = 0; i < lowmem_targets_size; i++) {
             minfree = lowmem_minfree[i];
             if (other_free < minfree && other_file < minfree) {
@@ -3240,7 +3245,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
             }
         }
 
-        if (min_score_adj == OOM_SCORE_ADJ_MAX + 1) {
+        if (min_score_adj == OOM_SCORE_ADJ_KILL_CANDIDATE) {
             if (debug_process_killing && lowmem_targets_size) {
                 ALOGI("Ignore %s memory pressure event "
                       "(free memory=%ldkB, cache=%ldkB, limit=%ldkB)",
@@ -3539,8 +3544,7 @@ static bool init_psi_monitors() {
      * the old strategy relies on memcg attributes that are available only in the v1 cgroups
      * hiearchy.
      */
-    bool use_new_strategy =
-        GET_LMK_PROPERTY(bool, "use_new_strategy", low_ram_device || !use_minfree_levels);
+    bool use_new_strategy = false;
     if (!use_new_strategy && memcg_version() != MemcgVersion::kV1) {
         ALOGE("Old kill strategy can only be used with v1 cgroup hierarchy");
         return false;
@@ -4105,11 +4109,10 @@ static int on_boot_completed() {
 static bool update_props() {
     /* By default disable low level vmpressure events */
     level_oomadj[VMPRESS_LEVEL_LOW] =
-        GET_LMK_PROPERTY(int32, "low", OOM_SCORE_ADJ_MAX + 1);
+        GET_LMK_PROPERTY(int32, "low", OOM_SCORE_ADJ_KILL_CANDIDATE);
     level_oomadj[VMPRESS_LEVEL_MEDIUM] =
         GET_LMK_PROPERTY(int32, "medium", 800);
-    level_oomadj[VMPRESS_LEVEL_CRITICAL] =
-        GET_LMK_PROPERTY(int32, "critical", 606);
+    level_oomadj[VMPRESS_LEVEL_CRITICAL] = 701;
     debug_process_killing = GET_LMK_PROPERTY(bool, "debug", false);
 
     /* By default disable upgrade/downgrade logic */
@@ -4119,19 +4122,15 @@ static bool update_props() {
         (int64_t)GET_LMK_PROPERTY(int32, "upgrade_pressure", 100);
     downgrade_pressure =
         (int64_t)GET_LMK_PROPERTY(int32, "downgrade_pressure", 100);
-    kill_heaviest_task =
-        GET_LMK_PROPERTY(bool, "kill_heaviest_task", false);
+    kill_heaviest_task = true;
     low_ram_device = true;
-    kill_timeout_ms =
-        (unsigned long)GET_LMK_PROPERTY(int32, "kill_timeout_ms", 100);
+    kill_timeout_ms = 1;
     pressure_after_kill_min_score =
         (unsigned long)GET_LMK_PROPERTY(int32, "pressure_after_kill_min_score", PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ);
-    use_minfree_levels =
-        GET_LMK_PROPERTY(bool, "use_minfree_levels", false);
+    use_minfree_levels = true;
     per_app_memcg =
         property_get_bool("ro.config.per_app_memcg", low_ram_device);
-    swap_free_low_percentage = clamp(0, 100, GET_LMK_PROPERTY(int32, "swap_free_low_percentage",
-        DEF_LOW_SWAP));
+    swap_free_low_percentage = 1;
     psi_partial_stall_ms = GET_LMK_PROPERTY(int32, "psi_partial_stall_ms",
         low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
     psi_complete_stall_ms = GET_LMK_PROPERTY(int32, "psi_complete_stall_ms",
@@ -4144,8 +4143,8 @@ static bool update_props() {
     thrashing_critical_pct = std::max(
             0, GET_LMK_PROPERTY(int32, "thrashing_limit_critical", thrashing_limit_pct * 3));
     swap_util_max = clamp(0, 100, GET_LMK_PROPERTY(int32, "swap_util_max", 100));
-    filecache_min_kb = GET_LMK_PROPERTY(int64, "filecache_min_kb", 0);
-    stall_limit_critical = GET_LMK_PROPERTY(int64, "stall_limit_critical", 100);
+    filecache_min_kb = 153600;
+    stall_limit_critical = 40;
     delay_monitors_until_boot = GET_LMK_PROPERTY(bool, "delay_monitors_until_boot", false);
     direct_reclaim_threshold_ms =
             GET_LMK_PROPERTY(int64, "direct_reclaim_threshold_ms", DEF_DIRECT_RECL_THRESH_MS);
@@ -4205,7 +4204,7 @@ int main(int argc, char **argv) {
 
             /* CAP_NICE required */
             struct sched_param param = {
-                    .sched_priority = 1,
+                    .sched_priority = 99,
             };
             if (sched_setscheduler(0, SCHED_FIFO, &param)) {
                 ALOGW("set SCHED_FIFO failed %s", strerror(errno));
