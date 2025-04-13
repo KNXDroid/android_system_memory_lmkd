@@ -2432,6 +2432,7 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     int64_t swap_kb;
     char buf[pagesize];
     char desc[LINE_MAX];
+    struct sched_param kill_param = { .sched_priority = 0 };
 
     if (!procp->valid || !read_proc_status(pid, buf, sizeof(buf))) {
         goto out;
@@ -2489,6 +2490,8 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     }
 
     last_kill_tm = *tm;
+    
+    sched_setscheduler(pidfd < 0 ? pid : pidfd, SCHED_RR, &kill_param);
 
     inc_killcnt(procp->oomadj);
 
