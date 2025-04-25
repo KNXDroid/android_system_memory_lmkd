@@ -2432,7 +2432,6 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     int64_t swap_kb;
     char buf[pagesize];
     char desc[LINE_MAX];
-    struct sched_param kill_param = { .sched_priority = 0 };
 
     if (!procp->valid || !read_proc_status(pid, buf, sizeof(buf))) {
         goto out;
@@ -2490,8 +2489,6 @@ static int kill_one_process(struct proc* procp, int min_oom_score, struct kill_i
     }
 
     last_kill_tm = *tm;
-    
-    sched_setscheduler(pidfd < 0 ? pid : pidfd, SCHED_RR, &kill_param);
 
     inc_killcnt(procp->oomadj);
 
@@ -4085,7 +4082,7 @@ static bool update_props() {
         (int64_t)GET_LMK_PROPERTY(int32, "downgrade_pressure", 100);
     kill_heaviest_task = true;
     low_ram_device = true;
-    kill_timeout_ms = 1;
+    kill_timeout_ms = 50;
     pressure_after_kill_min_score =
         (unsigned long)GET_LMK_PROPERTY(int32, "pressure_after_kill_min_score", PERCEPTIBLE_RECENT_FOREGROUND_APP_ADJ);
     use_minfree_levels = true;
@@ -4167,8 +4164,8 @@ int main(int argc, char **argv) {
             struct sched_param param = {
                     .sched_priority = 99,
             };
-            if (sched_setscheduler(0, SCHED_FIFO, &param)) {
-                ALOGW("set SCHED_FIFO failed %s", strerror(errno));
+            if (sched_setscheduler(0, SCHED_RR, &param)) {
+                ALOGW("set SCHED_RR failed %s", strerror(errno));
             }
         }
 
